@@ -23,10 +23,10 @@ namespace Cantera
 {
 
 CoverageDependentSurfPhase::PolynomialDependency::PolynomialDependency(
-    size_t k, size_t j, const AnyMap& dep_map
+    size_t k, vector<size_t> js, const AnyMap& dep_map
 ) :
     k(k),
-    j(j),
+    js(js),
     enthalpy_coeffs({0.0, 0.0, 0.0, 0.0, 0.0}),
     entropy_coeffs({0.0, 0.0, 0.0, 0.0, 0.0}),
     isLinear(false)
@@ -56,10 +56,10 @@ CoverageDependentSurfPhase::PolynomialDependency::PolynomialDependency(
 }
 
 CoverageDependentSurfPhase::InterpolativeDependency::InterpolativeDependency(
-    size_t k, size_t j, const AnyMap& dep_map, const AnyBase& node
+    size_t k, vector<size_t> js, const AnyMap& dep_map, const AnyBase& node
 ) :
     k(k),
-    j(j),
+    js(js),
     enthalpy_map({{0.0, 0.0}, {1.0, 0.0}}),
     entropy_map({{0.0, 0.0}, {1.0, 0.0}}),
     isPiecewise(false)
@@ -173,24 +173,53 @@ void CoverageDependentSurfPhase::initThermo()
             auto& cov_map = item.second->input["coverage-dependencies"];
             for (const auto& item2 : cov_map) {
                 size_t k = speciesIndex(item.first, false);
-                size_t j = speciesIndex(item2.first, false);
                 if (k == npos) {
                    throw InputFileError("CoverageDependentSurfPhase::initThermo",
                         item.second->input, "Unknown species '{}'.", item.first);
                 }
-                if (j == npos) {
-                    throw InputFileError("CoverageDependentSurfPhase::initThermo",
-                        item.second->input, "Unknown species '{}'.", item2.first);
+                // Parse species key: either a single name or "[sp1, sp2, ...]"
+                vector<size_t> js;
+                const string& key = item2.first;
+                if (!key.empty() && key.front() == '[' && key.back() == ']') {
+                    // Bracket-list: sum of multiple species coverages
+                    string inner = key.substr(1, key.size() - 2);
+                    // Split on commas
+                    size_t start = 0;
+                    while (start < inner.size()) {
+                        size_t comma = inner.find(',', start);
+                        string name = inner.substr(start,
+                            comma == string::npos ? string::npos : comma - start);
+                        // Trim whitespace
+                        size_t b = name.find_first_not_of(" \t");
+                        size_t e = name.find_last_not_of(" \t");
+                        name = (b == string::npos) ? "" : name.substr(b, e - b + 1);
+                        size_t j = speciesIndex(name, false);
+                        if (j == npos) {
+                            throw InputFileError(
+                                "CoverageDependentSurfPhase::initThermo",
+                                item.second->input, "Unknown species '{}'.", name);
+                        }
+                        js.push_back(j);
+                        if (comma == string::npos) break;
+                        start = comma + 1;
+                    }
+                } else {
+                    size_t j = speciesIndex(key, false);
+                    if (j == npos) {
+                        throw InputFileError("CoverageDependentSurfPhase::initThermo",
+                            item.second->input, "Unknown species '{}'.", key);
+                    }
+                    js.push_back(j);
                 }
                 auto& dep_map = item2.second.as<AnyMap>();
                 // For linear model and polynomial model
                 if (dep_map["model"] == "linear" || dep_map["model"] == "polynomial") {
-                    PolynomialDependency poly_deps(k, j, dep_map);
+                    PolynomialDependency poly_deps(k, js, dep_map);
                     m_PolynomialDependency.push_back(poly_deps);
                 // For piecewise-linear model and interpolative model
                 } else if (dep_map["model"] == "piecewise-linear" ||
                     dep_map["model"] == "interpolative") {
-                    InterpolativeDependency int_deps(k, j, dep_map,
+                    InterpolativeDependency int_deps(k, js, dep_map,
                                                      item.second->input);
                     addInterpolativeDependency(int_deps);
                 } else {
@@ -201,7 +230,7 @@ void CoverageDependentSurfPhase::initThermo()
                 }
                 // For coverage-dependent heat capacity parameters, if present
                 if (dep_map.hasKey("heat-capacity-a")) {
-                    HeatCapacityDependency cpcov_deps(k, j);
+                    HeatCapacityDependency cpcov_deps(k, js);
                     cpcov_deps.coeff_a = dep_map.convert("heat-capacity-a", "J/kmol/K");
                     cpcov_deps.coeff_b = dep_map.convert("heat-capacity-b", "J/kmol/K");
 
@@ -240,18 +269,33 @@ void CoverageDependentSurfPhase::getSpeciesParameters(const string& name,
 {
     SurfPhase::getSpeciesParameters(name, speciesNode);
     size_t k = speciesIndex(name, true);
+
+    // Build the YAML key for a dependency: single species name, or "[sp1, sp2, ...]"
+    auto depKey = [&](const vector<size_t>& js) -> string {
+        if (js.size() == 1) {
+            return speciesName(js[0]);
+        }
+        string key = "[";
+        for (size_t i = 0; i < js.size(); i++) {
+            if (i > 0) { key += ", "; }
+            key += speciesName(js[i]);
+        }
+        key += "]";
+        return key;
+    };
+
     // Get linear and polynomial model parameters from PolynomialDependency vector
     for (auto& item : m_PolynomialDependency) {
         if (item.k == k) {
             if (item.isLinear) {
                 auto& covdepNode =
-                    speciesNode["coverage-dependencies"][speciesName(item.j)]
+                    speciesNode["coverage-dependencies"][depKey(item.js)]
                         .getMapWhere("model", "linear", true);
                 covdepNode["enthalpy"].setQuantity(item.enthalpy_coeffs[1], "J/kmol");
                 covdepNode["entropy"].setQuantity(item.entropy_coeffs[1], "J/kmol/K");
             } else {
                 auto& covdepNode =
-                    speciesNode["coverage-dependencies"][speciesName(item.j)]
+                    speciesNode["coverage-dependencies"][depKey(item.js)]
                         .getMapWhere("model", "polynomial", true);
                 vector<double> hvec (
                     item.enthalpy_coeffs.begin() + 1, item.enthalpy_coeffs.end());
@@ -267,7 +311,7 @@ void CoverageDependentSurfPhase::getSpeciesParameters(const string& name,
         if (item.k == k) {
             if (item.isPiecewise) {
                 auto& covdepNode =
-                    speciesNode["coverage-dependencies"][speciesName(item.j)]
+                    speciesNode["coverage-dependencies"][depKey(item.js)]
                         .getMapWhere("model", "piecewise-linear", true);
                 vector<double> hcovs, enthalpies, scovs, entropies;
                 for (const auto& hmap : item.enthalpy_map) {
@@ -290,7 +334,7 @@ void CoverageDependentSurfPhase::getSpeciesParameters(const string& name,
                     (entropies[2] - entropies[1]) / (scovs[2] - scovs[1]), "J/kmol/K");
             } else {
                 auto& covdepNode =
-                    speciesNode["coverage-dependencies"][speciesName(item.j)]
+                    speciesNode["coverage-dependencies"][depKey(item.js)]
                         .getMapWhere("model", "interpolative", true);
                 vector<double> hcovs, enthalpies, scovs, entropies;
                 for (const auto& hmap : item.enthalpy_map) {
@@ -312,7 +356,7 @@ void CoverageDependentSurfPhase::getSpeciesParameters(const string& name,
     for (auto& item : m_HeatCapacityDependency) {
         if (item.k == k) {
             auto& covdepNode =
-                speciesNode["coverage-dependencies"][speciesName(item.j)]
+                speciesNode["coverage-dependencies"][depKey(item.js)]
                     .getMapWhere("heat-capacity-a", "", true);
             covdepNode["heat-capacity-a"].setQuantity(item.coeff_a, "J/kmol/K");
             covdepNode["heat-capacity-b"].setQuantity(item.coeff_b, "J/kmol/K");
@@ -475,26 +519,30 @@ void CoverageDependentSurfPhase::_updateCovDepThermo() const
 
         // For linear and polynomial model
         for (auto& item : m_PolynomialDependency) {
-            m_h_cov[item.k] += poly4(m_cov[item.j], item.enthalpy_coeffs);
-            m_s_cov[item.k] += poly4(m_cov[item.j], item.entropy_coeffs);
+            double cov_j = 0.0;
+            for (size_t j : item.js) { cov_j += m_cov[j]; }
+            m_h_cov[item.k] += poly4(cov_j, item.enthalpy_coeffs);
+            m_s_cov[item.k] += poly4(cov_j, item.entropy_coeffs);
         }
 
         // For piecewise-linear and interpolative model
         for (auto& item : m_InterpolativeDependency) {
-            auto h_iter = item.enthalpy_map.upper_bound(m_cov[item.j]);
-            auto s_iter = item.entropy_map.upper_bound(m_cov[item.j]);
+            double cov_j = 0.0;
+            for (size_t j : item.js) { cov_j += m_cov[j]; }
+            auto h_iter = item.enthalpy_map.upper_bound(cov_j);
+            auto s_iter = item.entropy_map.upper_bound(cov_j);
             AssertThrowMsg(h_iter != item.enthalpy_map.end(),
                            "CoverageDependentSurfPhase::_updateCovDepThermo",
-                           "Coverage out of range: {}", m_cov[item.j]);
+                           "Coverage out of range: {}", cov_j);
             AssertThrowMsg(h_iter != item.enthalpy_map.begin(),
                            "CoverageDependentSurfPhase::_updateCovDepThermo",
-                           "Coverage out of range: {}", m_cov[item.j]);
+                           "Coverage out of range: {}", cov_j);
             AssertThrowMsg(s_iter != item.entropy_map.end(),
                            "CoverageDependentSurfPhase::_updateCovDepThermo",
-                           "Coverage out of range: {}", m_cov[item.j]);
+                           "Coverage out of range: {}", cov_j);
             AssertThrowMsg(s_iter != item.entropy_map.begin(),
                            "CoverageDependentSurfPhase::_updateCovDepThermo",
-                           "Coverage out of range: {}", m_cov[item.j]);
+                           "Coverage out of range: {}", cov_j);
 
             double highHcov = h_iter->first;
             double highH = h_iter->second;
@@ -507,25 +555,25 @@ void CoverageDependentSurfPhase::_updateCovDepThermo() const
             double lowS = s_iter->second;
 
             m_h_cov[item.k] += (highH - lowH) / (highHcov - lowHcov)
-                * (m_cov[item.j] - lowHcov) + lowH;
+                * (cov_j - lowHcov) + lowH;
 
             m_s_cov[item.k] += (highS - lowS) / (highScov - lowScov)
-                * (m_cov[item.j] - lowScov) + lowS;
+                * (cov_j - lowScov) + lowS;
         }
 
         // For coverage-dependent heat capacity
         for (auto& item : m_HeatCapacityDependency) {
+            double cov_j = 0.0;
+            for (size_t j : item.js) { cov_j += m_cov[j]; }
             double a = item.coeff_a;
             double b = item.coeff_b;
-            m_cp_cov[item.k] += (a * log(tnow) + b) * m_cov[item.j] * m_cov[item.j];
+            m_cp_cov[item.k] += (a * log(tnow) + b) * cov_j * cov_j;
             double int_cp_tnow = tnow * (a * log(tnow) - a + b);
             double int_cp_298 = 298.15 * (a * log(298.15) - a + b);
-            m_h_cov[item.k] += (int_cp_tnow - int_cp_298) * m_cov[item.j]
-                               * m_cov[item.j];
+            m_h_cov[item.k] += (int_cp_tnow - int_cp_298) * cov_j * cov_j;
             double int_cp_T_tnow = log(tnow) * (a * log(tnow) + 2 * b);
             double int_cp_T_298 = log(298.15) * (a * log(298.15) + 2 * b);
-            m_s_cov[item.k] += 0.5 * (int_cp_T_tnow - int_cp_T_298) * m_cov[item.j]
-                               * m_cov[item.j];
+            m_s_cov[item.k] += 0.5 * (int_cp_T_tnow - int_cp_T_298) * cov_j * cov_j;
         }
 
         for (size_t k = 0; k < m_kk; k++) {
