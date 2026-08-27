@@ -133,17 +133,17 @@ public:
     {
         /*!
          * @param k index of a target species whose enthalpy and entropy are calculated
-         * @param j index of a species whose coverage affects enthalpy and entropy of
+         * @param js indices of species whose coverage affects enthalpy and entropy of
          *          a target species
          * @param dep_map map of coverage-dependency parameters
          */
-        PolynomialDependency(size_t k, size_t j, const AnyMap& dep_map);
+        PolynomialDependency(size_t k, vector<size_t> js, const AnyMap& dep_map);
 
         //! index of a target species whose enthalpy and entropy is calculated
         size_t k;
-        //! index of a species whose coverage affects enthalpy and entropy of
+        //! indices of species whose coverage affects enthalpy and entropy of
         //! a target species
-        size_t j;
+        vector<size_t> js;
         //! array of polynomial coefficients describing coverage-dependent enthalpy
         //! [J/kmol] in order of 1st-order, 2nd-order, 3rd-order, and 4th-order
         //! coefficients (@f$ c^{(1)}, c^{(2)}, c^{(3)}, \text{ and } c^{(4)} @f$
@@ -165,19 +165,19 @@ public:
     {
         /*!
          * @param k index of a target species whose enthalpy and entropy are calculated
-         * @param j index of a species whose coverage affects enthalpy and entropy of
+         * @param js indices of species whose coverage affects enthalpy and entropy of
          *          a target species
          * @param dep_map map of coverage-dependency parameters
          * @param node species node of a target species
          */
-        InterpolativeDependency(size_t k, size_t j,
+        InterpolativeDependency(size_t k, vector<size_t> js,
                                 const AnyMap& dep_map, const AnyBase& node);
 
         //! index of a target species whose enthalpy and entropy are calculated
         size_t k;
-        //! index of a species whose coverage affects enthalpy and entropy of
+        //! indices of species whose coverage affects enthalpy and entropy of
         //! a target species
-        size_t j;
+        vector<size_t> js;
         //! map of <coverage[dimensionless], enthalpy[J/kmol]> pairs
         map<double, double> enthalpy_map;
         //! map of <coverage[dimensionless], entropy[J/kmol/K]> pairs
@@ -192,16 +192,16 @@ public:
     {
         /*!
          * @param k index of a target species whose heat capacity is calculated
-         * @param j index of a species whose coverage affects heat capacity of
+         * @param js indices of species whose coverage affects heat capacity of
          *          a target species
          */
-        HeatCapacityDependency(size_t k, size_t j):
-                               k(k), j(j), coeff_a(0.0), coeff_b(0.0) {}
+        HeatCapacityDependency(size_t k, vector<size_t> js):
+                               k(k), js(js), coeff_a(0.0), coeff_b(0.0) {}
         //! index of a target species whose heat capacity is calculated
         size_t k;
-        //! index of a species whose coverage affects heat capacity of
+        //! indices of species whose coverage affects heat capacity of
         //! a target species
-        size_t j;
+        vector<size_t> js;
         //! coefficient @f$ c^{(a)} @f$ [J/kmol/K] in the coverage-dependent
         //! heat capacity model
         double coeff_a;
